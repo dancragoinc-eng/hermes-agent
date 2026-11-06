@@ -358,6 +358,45 @@ def named_profile_home(path: str | Path) -> Path | None:
     return None
 
 
+def _linked_profile_id(home: Path) -> str | None:
+    """Name of the ``profiles/<name>`` symlink entry that resolves to *home*, if any.
+
+    A profile home that is a symlink outside its root's ``profiles/`` (an encrypted or
+    off-disk home) resolves to a path carrying none of the naming shapes — and a scoped
+    gateway runs with ``HERMES_HOME`` set to that home, which makes the home its own root.
+    In both cases the registered name is the symlink entry's: find it by identity, under
+    the process root and the platform default root alike. ``None`` when nothing matches.
+    """
+    candidates: list[Path] = []
+    try:
+        candidates.append(get_default_hermes_root().resolve())
+    except (OSError, RuntimeError, ValueError):
+        pass
+    try:
+        platform_default = get_default_hermes_root(home="").resolve()
+    except (OSError, RuntimeError, ValueError):
+        platform_default = None
+    if platform_default is not None and platform_default not in candidates:
+        candidates.append(platform_default)
+    for base in candidates:
+        profiles = base / "profiles"
+        if not profiles.is_dir():
+            continue
+        try:
+            entries = list(profiles.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            try:
+                if entry.is_symlink() and entry.resolve(strict=False) == home:
+                    return entry.name
+            except OSError:
+                continue
+    return None
+
+
 def profile_name_for_home(path: str | Path | None) -> str | None:
     """Return the canonical profile id owning *path*, or ``None`` when it is not a profile home.
 
@@ -367,6 +406,15 @@ def profile_name_for_home(path: str | Path | None) -> str | None:
     if path is None or not str(path).strip():
         return None
     current = Path(path).expanduser()
+    try:
+        # A registered linked profile — a ``profiles/<name>`` symlink pointing at this home —
+        # keeps its name everywhere, scoped processes included, where a custom home would
+        # otherwise masquerade as the process's own ``default``. Identity over shape.
+        linked = _linked_profile_id(current.resolve(strict=False))
+        if linked is not None:
+            return linked
+    except (OSError, RuntimeError, ValueError):
+        pass
     try:
         default_root = get_default_hermes_root()
         for candidate in (current, current.resolve(strict=False)):

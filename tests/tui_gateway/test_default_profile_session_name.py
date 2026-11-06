@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import contextlib
+import sys
 from pathlib import Path
+
+import pytest
 
 
 def _profile_layout(tmp_path: Path) -> tuple[Path, Path]:
@@ -173,3 +176,35 @@ def test_custom_default_root_real_session_db_owner_stamping(tmp_path, monkeypatc
         assert launch_db.get_session("lazy-default") is None
         assert launch_db.get_session("seeded-default") is None
         assert launch_db.get_session("branched-default") is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")
+def test_linked_profile_home_name_resolves_by_identity(tmp_path, monkeypatch):
+    """A registered symlinked home keeps its profile name from every spelling, scoped or not."""
+    import hermes_constants
+    from hermes_constants import profile_name_for_home
+
+    default_home, _launch_home = _profile_layout(tmp_path)
+    offdisk = tmp_path / "offdisk"
+    offdisk.mkdir()
+    link = default_home / "profiles" / "linked"
+    link.symlink_to(offdisk)
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+
+    # The resolved spelling (what a gateway or client canonicalizes to) and the
+    # symlink spelling both name the registered profile by identity.
+    assert profile_name_for_home(offdisk) == "linked"
+    assert profile_name_for_home(offdisk.resolve()) == "linked"
+    assert profile_name_for_home(link) == "linked"
+    # The default root and unrelated paths keep their existing answers.
+    assert profile_name_for_home(default_home) == "default"
+    assert profile_name_for_home(tmp_path / "elsewhere") is None
+
+    # A process scoped to the linked home (a gateway running with HERMES_HOME set to
+    # it) still names it by its registered profile, not the scoped fallback "default".
+    monkeypatch.setenv("HERMES_HOME", str(offdisk))
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    assert profile_name_for_home(offdisk) == "linked"
