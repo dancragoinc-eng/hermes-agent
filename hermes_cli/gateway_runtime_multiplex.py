@@ -18,10 +18,49 @@ from pathlib import Path
 def multiplexer_root_for(home: Path) -> Path | None:
     """Default root that may multiplex *home*, when *home* is a named profile under it."""
     from hermes_constants import named_profile_home
-    if named_profile_home(home) is None:
+    if named_profile_home(home) is not None:
+        root = home.parent.parent
+        return root if root != home else None
+    return _root_of_linked_profile(Path(home))
+
+
+def _root_of_linked_profile(home: Path) -> Path | None:
+    """The candidate root whose ``profiles/<name>`` entry resolves to *home*, else None.
+
+    A named profile whose home is a symlink outside ``<root>/profiles/`` (an encrypted or
+    off-disk home) resolves to a path that no longer carries the ``<root>/profiles/<name>``
+    shape, so root inference by spelling loses it and its clients can never find the
+    multiplexer that serves it. Find the root by identity instead: scan the candidate roots'
+    ``profiles`` listings for a linked entry that resolves to *home*.
+    """
+    from hermes_constants import get_default_hermes_root, get_process_hermes_home
+    try:
+        target = Path(home).resolve(strict=False)
+    except OSError:
         return None
-    root = home.parent.parent
-    return root if root != home else None
+    try:
+        candidates = [get_default_hermes_root(), get_process_hermes_home()]
+    except OSError:
+        return None
+    seen: set[str] = set()
+    for base in candidates:
+        profiles = Path(base) / "profiles"
+        if str(profiles) in seen or not profiles.is_dir():
+            continue
+        seen.add(str(profiles))
+        try:
+            entries = list(profiles.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            try:
+                if entry.is_symlink() and entry.resolve(strict=False) == target:
+                    return Path(base)
+            except OSError:
+                continue
+    return None
 
 
 def implied_host_root(home: Path) -> Path | None:
